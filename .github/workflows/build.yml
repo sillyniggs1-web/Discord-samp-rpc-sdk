@@ -1,0 +1,76 @@
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (ASan+UBSan)
+        run: make -C tests run
+
+  android:
+    needs: host-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Discord Social SDK is proprietary. Provide it ONE of two ways (or neither => LOG-ONLY plugin):
+      #   a) put the SDK zip (e.g. sdk/DiscordSocialSdk-1.10.19337.zip) in a PRIVATE repo (git add -f), or
+      #   b) add a repository secret DISCORD_SDK_URL with a direct download URL of the zip.
+      - name: Prepare Discord SDK (optional)
+        env:
+          DISCORD_SDK_URL: ${{ secrets.DISCORD_SDK_URL }}
+        run: |
+          chmod +x build.sh tools/*.sh
+          SDK_ZIP="$(ls sdk/*.zip 2>/dev/null | head -n1 || true)"
+          if [ -z "$SDK_ZIP" ] && [ -n "$DISCORD_SDK_URL" ]; then
+            curl -fsSL -o /tmp/discord_sdk.zip "$DISCORD_SDK_URL"
+            SDK_ZIP=/tmp/discord_sdk.zip
+          fi
+          if [ -n "$SDK_ZIP" ]; then
+            tools/setup_sdk.sh "$SDK_ZIP"
+          else
+            echo "::warning::No Discord SDK provided (sdk/*.zip or secret DISCORD_SDK_URL): building the LOG-ONLY plugin"
+          fi
+
+      - name: Build classes.dex (Boot.java + SDK jars)
+        run: |
+          if [ -f third_party/discord_sdk/java/discord_partner_sdk.jar ]; then
+            echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms" || true
+            tools/make_dex.sh
+          else
+            echo "No SDK jars: skipping dex"
+          fi
+
+      - name: Build (armeabi-v7a, Nezuko)
+        run: ./build.sh
+
+      - name: Check ABIs
+        run: |
+          file libs/armeabi-v7a/libSampDiscordRPC.so
+          [ -f libs/armeabi-v7a/libSampDiscordBackend.so ] && file libs/armeabi-v7a/libSampDiscordBackend.so || true
+          readelf -d libs/armeabi-v7a/libSampDiscordRPC.so | grep NEEDED
+
+      - name: Assemble install pack
+        run: |
+          P=pack/mods; mkdir -p "$P/SampDiscordRPC"
+          cp libs/armeabi-v7a/libSampDiscordRPC.so "$P/"
+          cp config/SampDiscordRPC.ini "$P/SampDiscordRPC.ini.example"
+          cp lua/samprpc_bridge.lua pack/
+          if [ -f libs/armeabi-v7a/libSampDiscordBackend.so ]; then
+            cp libs/armeabi-v7a/libSampDiscordBackend.so "$P/SampDiscordRPC/"
+            cp third_party/discord_sdk/lib/armeabi-v7a/libdiscord_partner_sdk.so "$P/SampDiscordRPC/"
+            cp dist/dex/classes.dex "$P/SampDiscordRPC/"
+          fi
+          find pack -type f | sort
+
+      # NOTE: with the SDK the pack contains the proprietary libdiscord_partner_sdk.so. In a PUBLIC repo artifacts are
+      # downloadable by anyone, so use a PRIVATE repo when building with the SDK.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SampDiscordRPC-pack
+          path: pack
