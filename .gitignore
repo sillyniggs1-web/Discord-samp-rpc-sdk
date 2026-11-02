@@ -1,0 +1,9 @@
+libs/
+obj/
+tests/test_host
+dist/dex/
+# Proprietary Discord SDK: never commit it to a PUBLIC repo (license). In a private repo use `git add -f sdk/<zip>`.
+sdk/
+third_party/discord_sdk/include/
+third_party/discord_sdk/lib/
+third_party/discord_sdk/java/
